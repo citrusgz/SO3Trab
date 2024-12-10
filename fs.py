@@ -15,6 +15,16 @@ class fileSys:
         self.filename = filename
         if not os.path.exists(self.filename):
             self.create_fs()
+        else:
+            with open(self.filename, 'rb') as f:
+                f.seek(0)
+                self.header_size = struct.unpack('I', f.read(4))[0]
+                self.block_size = struct.unpack('I', f.read(4))[0]
+                self.size_mb = struct.unpack('I', f.read(4))[0] // (1024 * 1024)
+                self.fat_start = struct.unpack('I', f.read(4))[0]
+                self.root_dir_start = struct.unpack('I', f.read(4))[0]
+                self.data_start = struct.unpack('I', f.read(4))[0]
+            self.set_initial_directory()
 
     def create_fs(self):
         with open(self.filename, 'wb') as f:
@@ -26,6 +36,17 @@ class fileSys:
             f.write(struct.pack('I', self.fat_start))
             f.write(struct.pack('I', self.root_dir_start))
             f.write(struct.pack('I', self.data_start))
+        self.create_directory('/')
+
+    def set_initial_directory(self):
+        with open(self.filename, 'r+b') as fs_file:
+            fs_file.seek(self.root_dir_start)
+            for _ in range(1024):
+                entry = fs_file.read(self.max_filename_length + 8)
+                if entry[:self.max_filename_length].rstrip(b'\x00') == b'/':
+                    self.root_dir_start = fs_file.tell() - len(entry)
+                    return
+            raise Exception("Root directory '/' not found in the file system")
 
     def copy_to_fs(self, src_path):
         if os.path.isdir(src_path):
