@@ -7,7 +7,7 @@ class fileSys:
     def __init__(self, size_mb, filename='furgfs2.fs'):
         self.size_mb = size_mb
         self.block_size = 4096
-        self.max_filename_length = 10
+        self.max_filename_length = 10 + 4
         self.header_size = 1024
         self.fat_start = self.header_size
         self.root_dir_start = self.fat_start + (self.size_mb * 1024 * 1024 // self.block_size) * 4
