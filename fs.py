@@ -48,46 +48,6 @@ class fileSys:
                     return
             raise Exception("Root directory '/' not found in the file system")
 
-    def copy_to_fs(self, src_path):
-        if os.path.isdir(src_path):
-            raise IsADirectoryError(f"Provided path '{src_path}' is a directory, not a file.")
-        with open(src_path, 'rb') as src_file:
-            data = src_file.read()
-            with open(self.filename, 'r+b') as fs_file:
-                fs_file.seek(self.root_dir_start)
-                for _ in range(1024):
-                    entry = fs_file.read(self.max_filename_length + 8)
-                    if entry[:self.max_filename_length].rstrip(b'\x00') == b'':
-                        fs_file.seek(-len(entry), os.SEEK_CUR)
-                        filename_bytes = os.path.basename(src_path).encode('utf-8').ljust(self.max_filename_length, b'\x00')
-                        fs_file.write(filename_bytes + b'\x00' * 8)
-                        break
-                else:
-                    raise Exception("Root directory is full")
-
-                fs_file.seek(self.fat_start)
-                free_blocks = []
-                for block_index in range(self.size_mb * 1024 * 1024 // self.block_size):
-                    fat_entry = fs_file.read(4)
-                    if fat_entry == b'\x00\x00\x00\x00':
-                        free_blocks.append(block_index)
-                        if len(free_blocks) * self.block_size >= len(data):
-                            break
-                else:
-                    raise Exception("Not enough space in the file system")
-
-                if len(free_blocks) * self.block_size < len(data):
-                    raise Exception("Not enough contiguous space in the file system")
-
-                for block_index in free_blocks:
-                    fs_file.seek(self.fat_start + block_index * 4)
-                    fs_file.write(struct.pack('I', block_index + 1))
-                    fs_file.seek(self.data_start + block_index * self.block_size)
-                    fs_file.write(data[:self.block_size])
-                    data = data[self.block_size:]
-                    if not data:
-                        break
-
     def copy_from_fs(self, dest_path):
         with open(self.filename, 'rb') as fs_file:
             fs_file.seek(self.data_start)
@@ -329,33 +289,28 @@ class fileSys:
             fs = fileSys(0, filename)
         while True:
             print(f"\n{fs.filename} File System Menu")
-            print("1. Copy file to FS")
-            print("2. Copy file from FS")
-            print("3. Rename file")
-            print("4. Remove file from FS")
-            print("5. List files")
-            print("6. Check free space")
-            print("7. Protect file")
-            print("8. Unprotect file")
-            print("9. Create text file")
-            print("10. Create directory")
-            print("11. Move file")
-            print("12. Compress file")
-            print("13. Show current directory")
-            print("14. Change directory")
-            print("15. Show text file content")
-            print("16. Exit")
+            print("1. Copy file")
+            print("2. Rename file")
+            print("3. Remove file")
+            print("4. List files")
+            print("5. Check free space")
+            print("6. Protect file")
+            print("7. Unprotect file")
+            print("8. Create text file")
+            print("9. Create directory")
+            print("10. Move file")
+            print("11. Compress file")
+            print("12. Show current directory")
+            print("13. Change directory")
+            print("14. Show text file content")
+            print("15. Exit")
             choice = input("Enter your choice: ")
 
             if choice == '1':
-                src_path = input("Enter the source file path: ")
-                fs.copy_to_fs(src_path)
-                print(f"File '{src_path}' copied to FS.")
-            elif choice == '2':
                 dest_path = input("Enter the destination file path: ")
                 fs.copy_from_fs(dest_path)
                 print(f"File copied from FS to '{dest_path}'.")
-            elif choice == '3':
+            elif choice == '2':
                 old_name = input("Enter the old file name: ")
                 new_name = input("Enter the new file name: ")
                 try:
@@ -363,45 +318,45 @@ class fileSys:
                     print(f"File '{old_name}' renamed to '{new_name}'.")
                 except FileNotFoundError as e:
                     print(e)
-            elif choice == '4':
+            elif choice == '3':
                 filename = input("Enter the file name to remove: ")
                 try:
                     fs.remove_file(filename)
                     print(f"File '{filename}' removed from FS.")
                 except FileNotFoundError as e:
                     print(e)
-            elif choice == '5':
+            elif choice == '4':
                 files = fs.list_files()
                 print("Files in FS:")
                 for file in files:
                     print(file)
-            elif choice == '6':
+            elif choice == '5':
                 free_space = fs.free_space()
                 print(f"Free space in FS: {free_space} bytes")
-            elif choice == '7':
+            elif choice == '6':
                 filename = input("Enter the file name to protect: ")
                 try:
                     fs.protect_file(filename)
                     print(f"File '{filename}' protected in FS.")
                 except FileNotFoundError as e:
                     print(e)
-            elif choice == '8':
+            elif choice == '7':
                 filename = input("Enter the file name to unprotect: ")
                 try:
                     fs.unprotect_file(filename)
                     print(f"File '{filename}' unprotected in FS.")
                 except FileNotFoundError as e:
                     print(e)
-            elif choice == '9':
+            elif choice == '8':
                 filename = input("Enter the file name: ")
                 content = input("Enter the file content: ")
                 fs.create_text_file(filename, content)
                 print(f"Text file '{filename}' created in FS.")
-            elif choice == '10':
+            elif choice == '9':
                 dirname = input("Enter the directory name: ")
                 fs.create_directory(dirname)
                 print(f"Directory '{dirname}' created in FS.")
-            elif choice == '11':
+            elif choice == '10':
                 src_name = input("Enter the source file name: ")
                 dest_dir = input("Enter the destination directory name: ")
                 try:
@@ -409,7 +364,7 @@ class fileSys:
                     print(f"File '{src_name}' moved to directory '{dest_dir}'.")
                 except FileNotFoundError as e:
                     print(e)
-            elif choice == '12':
+            elif choice == '11':
                 filename = input("Enter the file name to compress: ")
                 compression_type = input("Enter the compression type (zip, tar, tar.gz): ")
                 try:
@@ -417,22 +372,22 @@ class fileSys:
                     print(f"File '{filename}' compressed in FS.")
                 except ValueError as e:
                     print(e)
-            elif choice == '13':
+            elif choice == '12':
                 print(f"Current directory: {fs.current_directory()}")
-            elif choice == '14':
+            elif choice == '13':
                 dirname = input("Enter the directory name: ")
                 try:
                     fs.change_directory(dirname)
                     print(f"Changed to directory '{dirname}'.")
                 except FileNotFoundError as e:
                     print(e)
-            elif choice == '15':
+            elif choice == '14':
                 filename = input("Enter the file name to show: ")
                 try:
                     fs.show_text_file(filename)
                 except FileNotFoundError as e:
                     print(e)
-            elif choice == '16':
+            elif choice == '15':
                 print("Exiting...")
                 break
             else:
