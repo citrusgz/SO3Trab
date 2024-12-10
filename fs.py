@@ -5,7 +5,7 @@ class FURGfs:
     def __init__(self, size_mb, filename='furgfs2.fs'):
         self.size_mb = size_mb
         self.block_size = 4096
-        self.max_filename_length = 10 + 4
+        self.max_filename_length = 255 # Max length of filename with extension
         self.header_size = 1024
         self.fat_start = self.header_size
         self.root_dir_start = self.fat_start + (self.size_mb * 1024 * 1024 // self.block_size) * 4
@@ -25,36 +25,48 @@ class FURGfs:
             f.write(struct.pack('I', self.root_dir_start))
             f.write(struct.pack('I', self.data_start))
 
-    def copy_to_fs(self, src_path):
-        if os.path.isdir(src_path):
-            raise IsADirectoryError(f"Provided path '{src_path}' is a directory, not a file.")
-        with open(src_path, 'rb') as src_file:
-            data = src_file.read()
-            with open(self.filename, 'r+b') as fs_file:
-                fs_file.seek(self.root_dir_start)
-                for _ in range(1024):
-                    entry = fs_file.read(self.max_filename_length + 8)
-                    if entry[:self.max_filename_length].rstrip(b'\x00') == b'':
-                        fs_file.seek(-len(entry), os.SEEK_CUR)
-                        filename_bytes = os.path.basename(src_path).encode('utf-8').ljust(self.max_filename_length, b'\x00')
-                        fs_file.write(filename_bytes + b'\x00' * 8)
-                        break
-                else:
-                    raise Exception("Root directory is full")
+    def create_text_file(self, filename, content):
+        with open(self.filename, 'r+b') as fs_file:
+            fs_file.seek(self.root_dir_start)
+            for _ in range(1024):
+                entry = fs_file.read(self.max_filename_length + 8)
+                if entry[:self.max_filename_length].rstrip(b'\x00') == b'':
+                    fs_file.seek(-len(entry), os.SEEK_CUR)
+                    filename_bytes = filename.encode('utf-8').ljust(self.max_filename_length, b'\x00')
+                    fs_file.write(filename_bytes + b'\x00' * 8)
+                    break
+            else:
+                raise Exception("Root directory is full")
 
-                fs_file.seek(self.fat_start)
-                for block_index in range(self.size_mb * 1024 * 1024 // self.block_size):
-                    fat_entry = fs_file.read(4)
-                    if fat_entry == b'\x00\x00\x00\x00':
-                        fs_file.seek(-4, os.SEEK_CUR)
-                        fs_file.write(struct.pack('I', block_index + 1))
-                        fs_file.seek(self.data_start + block_index * self.block_size)
-                        fs_file.write(data[:self.block_size])
-                        data = data[self.block_size:]
-                        if not data:
-                            break
-                else:
-                    raise Exception("Not enough space in the file system")
+            fs_file.seek(self.fat_start)
+            for block_index in range(self.size_mb * 1024 * 1024 // self.block_size):
+                fat_entry = fs_file.read(4)
+                if fat_entry == b'\x00\x00\x00\x00':
+                    fs_file.seek(-4, os.SEEK_CUR)
+                    fs_file.write(struct.pack('I', block_index + 1))
+                    fs_file.seek(self.data_start + block_index * self.block_size)
+                    fs_file.write(content.encode('utf-8')[:self.block_size])
+                    content = content[self.block_size:]
+                    if not content:
+                        break
+            else:
+                raise Exception("Not enough space in the file system")
+
+    def show_file_content(self, filename):
+        with open(self.filename, 'rb') as fs_file:
+            fs_file.seek(self.root_dir_start)
+            for _ in range(1024):
+                entry = fs_file.read(self.max_filename_length + 8)
+                entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
+                if entry_filename == filename:
+                    if entry[self.max_filename_length] == 1:
+                        print(f"File '{filename}' is protected and cannot be read.")
+                        return
+                    fs_file.seek(self.data_start)
+                    data = fs_file.read()
+                    print(data.decode('utf-8'))
+                    return
+        raise FileNotFoundError(f"File '{filename}' not found in the file system")
 
     def copy_from_fs(self, dest_path):
         with open(self.filename, 'rb') as fs_file:
@@ -146,38 +158,7 @@ class FURGfs:
                     fs_file.write(entry[:self.max_filename_length] + unprotected_flag + entry[self.max_filename_length + 1:])
                     return
         raise FileNotFoundError(f"File '{filename}' not found in the file system")
-    
-    def create_text_file(self, filename, content):
-        with open(self.filename, 'r+b') as fs_file:
-            fs_file.seek(self.root_dir_start)
-            for _ in range(1024):
-                entry = fs_file.read(self.max_filename_length + 8)
-                if entry[:self.max_filename_length].rstrip(b'\x00') == b'':
-                    fs_file.seek(-len(entry), os.SEEK_CUR)
-                    filename_bytes = filename.encode('utf-8').ljust(self.max_filename_length, b'\x00')
-                    fs_file.write(filename_bytes + b'\x00' * 8)
-                    break
-            else:
-                raise Exception("Root directory is full")
 
-            fs_file.seek(self.data_start)
-            fs_file.write(content.encode('utf-8'))
-
-    def show_file_content(self, filename):
-        with open(self.filename, 'rb') as fs_file:
-            fs_file.seek(self.root_dir_start)
-            for _ in range(1024):
-                entry = fs_file.read(self.max_filename_length + 8)
-                if not entry:
-                    break
-                entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
-                if entry_filename == filename:
-                    fs_file.seek(self.data_start)
-                    content = fs_file.read().decode('utf-8')
-                    print(f"Content of '{filename}':")
-                    print(content)
-                    return
-        raise FileNotFoundError(f"File '{filename}' not found in the file system")
 
     @staticmethod
     def menu():
@@ -195,14 +176,14 @@ class FURGfs:
         fs = FURGfs(size_mb if size_mb is not None else 800, filename)
         while True:
             print(f"\n{fs.filename} File System Menu")
-            print("1. Show file content")
+            print("1. Show file content (need to be fixed)")
             print("2. Copy file out of FS")
             print("3. Rename file")
             print("4. Remove file")
-            print("5. List files")
+            print("5. List files (need to be fixed)")
             print("6. Check free space")
             print("7. Protect file")
-            print("8. Unprotect file (not working as expected)")
+            print("8. Unprotect file")
             print("9. Create text file")
             print("10. Copy file to FS")
             print("24. Exit")
