@@ -2,14 +2,12 @@ import os
 import struct
 import zipfile
 import tarfile
-import curses
-import time
 
-class FURGfs2:
+class fileSys:
     def __init__(self, size_mb, filename='furgfs2.fs'):
         self.size_mb = size_mb
         self.block_size = 4096
-        self.max_filename_length = 255
+        self.max_filename_length = 10
         self.header_size = 1024
         self.fat_start = self.header_size
         self.root_dir_start = self.fat_start + (self.size_mb * 1024 * 1024 // self.block_size) * 4
@@ -46,8 +44,19 @@ class FURGfs2:
                 else:
                     raise Exception("Root directory is full")
 
-                fs_file.seek(self.data_start)
-                fs_file.write(data)
+                fs_file.seek(self.fat_start)
+                for block_index in range(self.size_mb * 1024 * 1024 // self.block_size):
+                    fat_entry = fs_file.read(4)
+                    if fat_entry == b'\x00\x00\x00\x00':
+                        fs_file.seek(-4, os.SEEK_CUR)
+                        fs_file.write(struct.pack('I', block_index + 1))
+                        fs_file.seek(self.data_start + block_index * self.block_size)
+                        fs_file.write(data[:self.block_size])
+                        data = data[self.block_size:]
+                        if not data:
+                            break
+                else:
+                    raise Exception("Not enough space in the file system")
 
     def copy_from_fs(self, dest_path):
         with open(self.filename, 'rb') as fs_file:
@@ -142,6 +151,20 @@ class FURGfs2:
     
     def create_text_file(self, filename, content):
         with open(self.filename, 'r+b') as fs_file:
+            content_bytes = content.encode('utf-8')
+            fs_file.seek(self.fat_start)
+            for block_index in range(self.size_mb * 1024 * 1024 // self.block_size):
+                fat_entry = fs_file.read(4)
+                if fat_entry == b'\x00\x00\x00\x00':
+                    fs_file.seek(-4, os.SEEK_CUR)
+                    fs_file.write(struct.pack('I', block_index + 1))
+                    fs_file.seek(self.data_start + block_index * self.block_size)
+                    fs_file.write(content_bytes[:self.block_size])
+                    content_bytes = content_bytes[self.block_size:]
+                    if not content_bytes:
+                        break
+            else:
+                raise Exception("Not enough space in the file system")
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
                 entry = fs_file.read(self.max_filename_length + 8)
@@ -152,9 +175,6 @@ class FURGfs2:
                     break
             else:
                 raise Exception("Root directory is full")
-
-            fs_file.seek(self.data_start)
-            fs_file.write(content.encode('utf-8'))
 
     def create_directory(self, dirname):
         with open(self.filename, 'r+b') as fs_file:
@@ -234,11 +254,44 @@ class FURGfs2:
                     return
         raise FileNotFoundError(f"Directory '{dirname}' not found in the file system")
 
+    def show_text_file(self, filename):
+        with open(self.filename, 'rb') as fs_file:
+            fs_file.seek(self.root_dir_start)
+            for _ in range(1024):
+                entry = fs_file.read(self.max_filename_length + 8)
+                if not entry:
+                    break
+                entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
+                if entry_filename == filename:
+                    fs_file.seek(self.data_start)
+                    content = fs_file.read().decode('utf-8')
+                    print(f"Content of '{filename}':\n{content}")
+                    return
+        raise FileNotFoundError(f"File '{filename}' not found in the file system")
+
     @staticmethod
     def menu():
-        filename = input("Enter the file system filename (default 'furgfs2.fs'): ") or 'furgfs2.fs'
-        size_mb = int(input("Enter the file system size in MB (default 800MB): ") or 800)
-        fs = FURGfs2(size_mb, filename)
+        import glob
+        existing_fs_files = glob.glob("*.fs")
+        if existing_fs_files:
+            print("Existing file systems found:")
+            for i, fs_file in enumerate(existing_fs_files, 1):
+                print(f"{i}. {fs_file}")
+            choice = input("Enter the number of the file system to open or press Enter to create a new one: ")
+            if choice.isdigit() and 1 <= int(choice) <= len(existing_fs_files):
+                filename = existing_fs_files[int(choice) - 1]
+                size_mb = None
+            else:
+                filename = input("Enter the file system filename (default 'furgfs2.fs'): ") or 'furgfs2.fs'
+                size_mb = int(input("Enter the file system size in MB (default 800MB): ") or 800)
+        else:
+            filename = input("Enter the file system filename (default 'furgfs2.fs'): ") or 'furgfs2.fs'
+            size_mb = int(input("Enter the file system size in MB (default 800MB): ") or 800)
+        
+        if size_mb:
+            fs = fileSys(size_mb, filename)
+        else:
+            fs = fileSys(0, filename)
         while True:
             print(f"{fs.filename} File System Menu")
             print("1. Copy file to FS")
@@ -255,7 +308,8 @@ class FURGfs2:
             print("12. Compress file")
             print("13. Show current directory")
             print("14. Change directory")
-            print("15. Exit")
+            print("15. Show text file content")
+            print("16. Exit")
             choice = input("Enter your choice: ")
 
             if choice == '1':
@@ -338,70 +392,16 @@ class FURGfs2:
                 except FileNotFoundError as e:
                     print(e)
             elif choice == '15':
+                filename = input("Enter the file name to show: ")
+                try:
+                    fs.show_text_file(filename)
+                except FileNotFoundError as e:
+                    print(e)
+            elif choice == '16':
                 print("Exiting...")
                 break
             else:
                 print("Invalid choice. Please try again.")
 
-
-def init_animation(stdscr):
-    curses.curs_set(0)  # Ocultar o cursor
-    stdscr.nodelay(1)  # Permitir leitura não bloqueante
-    stdscr.timeout(100)  # Atualiza a tela a cada 100ms
-
-    # Frames do pinguim (balançando)
-    presentation = [
-        r"""
-      _____                    _____                    _____                    _____                    _____                    _____          
-     /\    \                  /\    \                  /\    \                  /\    \                  /\    \                  /\    \         
-    /::\    \                /::\    \                /::\____\                /::\    \                /::\    \                /::\    \        
-    \:::\    \              /::::\    \              /:::/    /               /::::\    \               \:::\    \              /::::\    \       
-     \:::\    \            /::::::\    \            /:::/    /               /::::::\    \               \:::\    \            /::::::\    \      
-      \:::\    \          /:::/\:::\    \          /:::/    /               /:::/\:::\    \               \:::\    \          /:::/\:::\    \     
-       \:::\    \        /:::/__\:::\    \        /:::/____/               /:::/__\:::\    \               \:::\    \        /:::/__\:::\    \    
-       /::::\    \      /::::\   \:::\    \      /::::\    \              /::::\   \:::\    \              /::::\    \      /::::\   \:::\    \   
-      /::::::\    \    /::::::\   \:::\    \    /::::::\____\________    /::::::\   \:::\    \    ____    /::::::\    \    /::::::\   \:::\    \  
-     /:::/\:::\    \  /:::/\:::\   \:::\    \  /:::/\:::::::::::\    \  /:::/\:::\   \:::\ ___\  /\   \  /:::/\:::\    \  /:::/\:::\   \:::\____\ 
-    /:::/  \:::\____\/:::/  \:::\   \:::\____\/:::/  |:::::::::::\____\/:::/__\:::\   \:::|    |/::\   \/:::/  \:::\____\/:::/  \:::\   \:::|    |
-   /:::/    \::/    /\::/    \:::\  /:::/    /\::/   |::|~~~|~~~~~     \:::\   \:::\  /:::|____|\:::\  /:::/    \::/    /\::/   |::::\  /:::|____|
-  /:::/    / \/____/  \/____/ \:::\/:::/    /  \/____|::|   |           \:::\   \:::\/:::/    /  \:::\/:::/    / \/____/  \/____|:::::\/:::/    / 
- /:::/    /                    \::::::/    /         |::|   |            \:::\   \::::::/    /    \::::::/    /                 |:::::::::/    /  
-/:::/    /                      \::::/    /          |::|   |             \:::\   \::::/    /      \::::/____/                  |::|\::::/    /   
-\::/    /                       /:::/    /           |::|   |              \:::\  /:::/    /        \:::\    \                  |::| \::/____/    
- \/____/                       /:::/    /            |::|   |               \:::\/:::/    /          \:::\    \                 |::|  ~|          
-                              /:::/    /             |::|   |                \::::::/    /            \:::\    \                |::|   |          
-                             /:::/    /              \::|   |                 \::::/    /              \:::\____\               \::|   |          
-                             \::/    /                \:|   |                  \::/____/                \::/    /                \:|   |          
-                              \/____/                  \|___|                   ~~                       \/____/                  \|___|          
-                                                                                                                                                  
-                                                     
-        """
-        
-    ]
-
-    start_time = time.time()
-    frame_idx = 0
-
-    while True:
-        elapsed_time = time.time() - start_time
-        if elapsed_time > 3:
-            break
-
-        # Limpar a tela
-        stdscr.clear()
-
-        # Atualizar frame
-        frame = presentation[frame_idx]
-        stdscr.addstr(5, 10, frame)
-        frame_idx = (frame_idx + 1) % len(presentation)
-
-        # Atualizar tela
-        stdscr.refresh()
-
-        # Aguarda próximo frame
-        time.sleep(0.5)
-
-
 if __name__ == '__main__':
-    curses.wrapper(init_animation)
-    FURGfs2.menu()
+    fileSys.menu()
