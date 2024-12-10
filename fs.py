@@ -66,18 +66,27 @@ class fileSys:
                     raise Exception("Root directory is full")
 
                 fs_file.seek(self.fat_start)
+                free_blocks = []
                 for block_index in range(self.size_mb * 1024 * 1024 // self.block_size):
                     fat_entry = fs_file.read(4)
                     if fat_entry == b'\x00\x00\x00\x00':
-                        fs_file.seek(-4, os.SEEK_CUR)
-                        fs_file.write(struct.pack('I', block_index + 1))
-                        fs_file.seek(self.data_start + block_index * self.block_size)
-                        fs_file.write(data[:self.block_size])
-                        data = data[self.block_size:]
-                        if not data:
+                        free_blocks.append(block_index)
+                        if len(free_blocks) * self.block_size >= len(data):
                             break
                 else:
                     raise Exception("Not enough space in the file system")
+
+                if len(free_blocks) * self.block_size < len(data):
+                    raise Exception("Not enough contiguous space in the file system")
+
+                for block_index in free_blocks:
+                    fs_file.seek(self.fat_start + block_index * 4)
+                    fs_file.write(struct.pack('I', block_index + 1))
+                    fs_file.seek(self.data_start + block_index * self.block_size)
+                    fs_file.write(data[:self.block_size])
+                    data = data[self.block_size:]
+                    if not data:
+                        break
 
     def copy_from_fs(self, dest_path):
         with open(self.filename, 'rb') as fs_file:
@@ -280,12 +289,17 @@ class fileSys:
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
                 entry = fs_file.read(self.max_filename_length + 8)
-                if not entry:
-                    break
                 entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
                 if entry_filename == filename:
-                    fs_file.seek(self.data_start)
-                    content = fs_file.read().decode('utf-8')
+                    fs_file.seek(self.fat_start + _ * 4)
+                    block_index = struct.unpack('I', fs_file.read(4))[0]
+                    data = b''
+                    while block_index != 0:
+                        fs_file.seek(self.data_start + (block_index - 1) * self.block_size)
+                        data += fs_file.read(self.block_size)
+                        fs_file.seek(self.fat_start + block_index * 4)
+                        block_index = struct.unpack('I', fs_file.read(4))[0]
+                    content = data.decode('utf-8').rstrip('\x00')
                     print(f"Content of '{filename}':\n{content}")
                     return
         raise FileNotFoundError(f"File '{filename}' not found in the file system")
@@ -314,7 +328,7 @@ class fileSys:
         else:
             fs = fileSys(0, filename)
         while True:
-            print(f"{fs.filename} File System Menu")
+            print(f"\n{fs.filename} File System Menu")
             print("1. Copy file to FS")
             print("2. Copy file from FS")
             print("3. Rename file")
