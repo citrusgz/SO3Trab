@@ -1,7 +1,5 @@
 import os
 import struct
-import zipfile
-import tarfile
 
 class FURGfs:
     def __init__(self, size_mb, filename='furgfs2.fs'):
@@ -174,19 +172,6 @@ class FURGfs:
                     return
             raise FileNotFoundError(f"Destination directory '{dest_dir}' not found in the file system")
         
-    def compress_file(self, filename, compression_type):
-        if compression_type == 'zip':
-            with zipfile.ZipFile(f'{filename}.zip', 'w') as zipf:
-                zipf.write(filename, os.path.basename(filename))
-        elif compression_type == 'tar':
-            with tarfile.open(f'{filename}.tar', 'w') as tarf:
-                tarf.add(filename, arcname=os.path.basename(filename))
-        elif compression_type == 'tar.gz':
-            with tarfile.open(f'{filename}.tar.gz', 'w:gz') as tarf:
-                tarf.add(filename, arcname=os.path.basename(filename))
-        else:
-            raise ValueError("Unsupported compression type. Choose 'zip', 'tar', or 'tar.gz'.")
-        
     def current_directory(self):
         with open(self.filename, 'rb') as fs_file:
             fs_file.seek(self.root_dir_start)
@@ -211,7 +196,7 @@ class FURGfs:
                     self.root_dir_start = fs_file.tell() - len(entry)
                     return
         raise FileNotFoundError(f"Directory '{dirname}' not found in the file system")
-    
+
     def show_file_content(self, filename):
         with open(self.filename, 'rb') as fs_file:
             fs_file.seek(self.root_dir_start)
@@ -245,17 +230,16 @@ class FURGfs:
         while True:
             print(f"{fs.filename} File System Menu")
             print("1. Show file content")
-            print("2. Copy file from FS")
+            print("2. Copy file out of FS")
             print("3. Rename file")
-            print("4. Remove file from FS")
+            print("4. Remove file")
             print("5. List files")
             print("6. Check free space")
             print("7. Protect file")
-            print("8. Unprotect file")
+            print("8. Unprotect file (not working as expected)")
             print("9. Create text file")
             print("10. Create directory")
-            print("11. Move file")
-            print("12. Compress file")
+            print("11. Move file (not tested)")
             print("13. Show current directory")
             print("14. Change directory")
             print("15. Exit")
@@ -324,14 +308,6 @@ class FURGfs:
                     fs.move(src_name, dest_dir)
                     print(f"File '{src_name}' moved to directory '{dest_dir}'.")
                 except FileNotFoundError as e:
-                    print(e)
-            elif choice == '12':
-                filename = input("Enter the file name to compress: ")
-                compression_type = input("Enter the compression type (zip, tar, tar.gz): ")
-                try:
-                    fs.compress_file(filename, compression_type)
-                    print(f"File '{filename}' compressed in FS.")
-                except ValueError as e:
                     print(e)
             elif choice == '13':
                 print(f"Current directory: {fs.current_directory()}")
