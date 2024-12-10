@@ -68,12 +68,56 @@ class FURGfs:
                     return
         raise FileNotFoundError(f"File '{filename}' not found in the file system")
 
-    def copy_from_fs(self, dest_path):
+    def copy_to_fs(self, src_path):
+        with open(src_path, 'rb') as src_file:
+            content = src_file.read()
+            filename = os.path.basename(src_path)
+            self.create_binary_file(filename, content)
+
+    def create_binary_file(self, filename, content):
+        with open(self.filename, 'r+b') as fs_file:
+            fs_file.seek(self.root_dir_start)
+            for _ in range(1024):
+                entry = fs_file.read(self.max_filename_length + 8)
+                if entry[:self.max_filename_length].rstrip(b'\x00') == b'':
+                    fs_file.seek(-len(entry), os.SEEK_CUR)
+                    filename_bytes = filename.encode('utf-8').ljust(self.max_filename_length, b'\x00')
+                    fs_file.write(filename_bytes + b'\x00' * 8)
+                    break
+            else:
+                raise Exception("Root directory is full")
+
+            fs_file.seek(self.fat_start)
+            for block_index in range(self.size_mb * 1024 * 1024 // self.block_size):
+                fat_entry = fs_file.read(4)
+                if fat_entry == b'\x00\x00\x00\x00':
+                    fs_file.seek(-4, os.SEEK_CUR)
+                    fs_file.write(struct.pack('I', block_index + 1))
+                    fs_file.seek(self.data_start + block_index * self.block_size)
+                    fs_file.write(content[:self.block_size])
+                    content = content[self.block_size:]
+                    if not content:
+                        break
+            else:
+                raise Exception("Not enough space in the file system")
+
+    def copy_from_fs(self, filename, dest_path):
         with open(self.filename, 'rb') as fs_file:
-            fs_file.seek(self.data_start)
-            data = fs_file.read()
-            with open(dest_path, 'wb') as dest_file:
-                dest_file.write(data)
+            fs_file.seek(self.root_dir_start)
+            for _ in range(1024):
+                entry = fs_file.read(self.max_filename_length + 8)
+                entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
+                if entry_filename == filename:
+                    fs_file.seek(self.fat_start)
+                    for block_index in range(self.size_mb * 1024 * 1024 // self.block_size):
+                        fat_entry = fs_file.read(4)
+                        if struct.unpack('I', fat_entry)[0] == block_index + 1:
+                            fs_file.seek(self.data_start + block_index * self.block_size)
+                            data = fs_file.read(self.block_size)
+                            with open(os.path.join(dest_path, filename), 'wb') as dest_file:
+                                dest_file.write(data)
+                            return
+            raise FileNotFoundError(f"File '{filename}' not found in the file system")
 
     def rename_file(self, old_name, new_name):
         with open(self.filename, 'r+b') as fs_file:
@@ -196,9 +240,13 @@ class FURGfs:
                 except FileNotFoundError as e:
                     print(e)
             elif choice == '2':
+                filename = input("Enter the file name: ")
                 dest_path = input("Enter the destination file path: ")
-                fs.copy_from_fs(dest_path)
-                print(f"File copied from FS to '{dest_path}'.")
+                try:
+                    fs.copy_from_fs(filename, dest_path)
+                    print(f"File '{filename}' copied from FS to '{dest_path}'.")
+                except FileNotFoundError as e:
+                    print(e)
             elif choice == '3':
                 old_name = input("Enter the old file name: ")
                 new_name = input("Enter the new file name: ")
@@ -237,20 +285,11 @@ class FURGfs:
                     print(f"File '{filename}' unprotected in FS.")
                 except FileNotFoundError as e:
                     print(e)
-            elif choice == '9':
-                filename = input("Enter the file name: ")
-                content = input("Enter the file content: ")
-                fs.create_text_file(filename, content)
-                print(f"Text file '{filename}' created in FS.")
             elif choice == '10':
-                src_name = input("Enter the source file name: ")
-                dest_dir = input("Enter the destination directory name: ")
-                try:
-                    fs.move(src_name, dest_dir)
-                    print(f"File '{src_name}' moved to directory '{dest_dir}'.")
-                except FileNotFoundError as e:
-                    print(e)
-            elif choice == '10':
+                src_path = input("Enter the source file path: ")
+                fs.copy_to_fs(src_path)
+                print(f"File '{src_path}' copied to FS.")
+            elif choice == '11':
                 src_path = input("Enter the source file path: ")
                 fs.copy_to_fs(src_path)
                 print(f"File '{src_path}' copied to FS.")
