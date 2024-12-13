@@ -57,11 +57,15 @@ class FURGfs:
             # Step 1: Find the root directory entry
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
-                entry = fs_file.read(self.max_filename_length + 8)
+                entry = fs_file.read(self.max_filename_length + 9)
+                if not entry or len(entry) < self.max_filename_length + 9:
+                    break
+                if entry[0] == 0xE5:  # Skip deleted entries
+                    continue
                 entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
                 if entry_filename == filename:
-                    starting_block = struct.unpack('I', entry[self.max_filename_length:self.max_filename_length + 4])[0]
-                    file_size = struct.unpack('I', entry[self.max_filename_length + 4:self.max_filename_length + 8])[0]
+                    starting_block = struct.unpack('I', entry[self.max_filename_length + 1:self.max_filename_length + 5])[0]
+                    file_size = struct.unpack('I', entry[self.max_filename_length + 5:self.max_filename_length + 9])[0]
 
                     # Step 2: Read data blocks following FAT chain
                     data = b''
@@ -96,17 +100,16 @@ class FURGfs:
 
     def create_binary_file(self, filename, content):
         with open(self.filename, 'r+b') as fs_file:
-            # Step 1: Find empty root directory entry
+            # Find empty root directory entry
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
-                entry = fs_file.read(self.max_filename_length + 8)
+                entry = fs_file.read(self.max_filename_length + 9)
                 if entry[:self.max_filename_length].rstrip(b'\x00') == b'':
-                    # Empty entry found
                     fs_file.seek(-len(entry), os.SEEK_CUR)
                     filename_bytes = filename.encode('utf-8').ljust(self.max_filename_length, b'\x00')
-                    # Placeholder for starting block index and file size
-                    fs_file.write(filename_bytes + b'\x00' * 8)
-                    root_dir_entry_pos = fs_file.tell() - (self.max_filename_length + 8)
+                    protected_flag = b'\x00'  # Not protected
+                    fs_file.write(filename_bytes + protected_flag + b'\x00' * 8)
+                    root_dir_entry_pos = fs_file.tell() - (self.max_filename_length + 9)
                     break
             else:
                 raise Exception("Root directory is full")
@@ -141,22 +144,26 @@ class FURGfs:
                     fs_file.write(struct.pack('I', 0xFFFFFFFF))
 
             # Step 4: Update root directory entry with starting block and file size
-            fs_file.seek(root_dir_entry_pos)
-            filename_bytes = filename.encode('utf-8').ljust(self.max_filename_length, b'\x00')
+            fs_file.seek(root_dir_entry_pos + self.max_filename_length + 1)
             starting_block = struct.pack('I', free_blocks[0])
             file_size = struct.pack('I', len(content))
-            fs_file.write(filename_bytes + starting_block + file_size)
+            fs_file.write(starting_block + file_size)
 
     def copy_from_fs(self, filename, dest_path):
         with open(self.filename, 'rb') as fs_file:
             # Step 1: Find the root directory entry
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
-                entry = fs_file.read(self.max_filename_length + 8)
+                entry = fs_file.read(self.max_filename_length + 9)
+                if not entry or len(entry) < self.max_filename_length + 9:
+                    break
+                if entry[0] == 0xE5:  # Skip deleted entries
+                    continue
                 entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
                 if entry_filename == filename:
-                    starting_block = struct.unpack('I', entry[self.max_filename_length:self.max_filename_length + 4])[0]
-                    file_size = struct.unpack('I', entry[self.max_filename_length + 4:self.max_filename_length + 8])[0]
+                    # Skip the protected_flag byte
+                    starting_block = struct.unpack('I', entry[self.max_filename_length + 1:self.max_filename_length + 5])[0]
+                    file_size = struct.unpack('I', entry[self.max_filename_length + 5:self.max_filename_length + 9])[0]
 
                     # Step 2: Read data blocks following FAT chain
                     data = b''
@@ -178,6 +185,7 @@ class FURGfs:
                     # Step 3: Write data to destination file
                     with open(os.path.join(dest_path, filename), 'wb') as dest_file:
                         dest_file.write(data)
+                    print(f"File '{filename}' copied to '{dest_path}'.")
                     return
             raise FileNotFoundError(f"File '{filename}' not found in the file system")
 
@@ -185,42 +193,78 @@ class FURGfs:
         with open(self.filename, 'r+b') as fs_file:
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
-                entry = fs_file.read(self.max_filename_length + 8)
-                if not entry:
-                    break
-                filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
-                if filename == old_name:
+                entry_pos = fs_file.tell()
+                entry = fs_file.read(self.max_filename_length + 9)
+                if not entry or entry[:self.max_filename_length].rstrip(b'\x00') == b'':
+                    continue
+                entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
+                protected_flag = entry[self.max_filename_length]
+                if entry_filename == old_name:
+                    if protected_flag == 1:
+                        print(f"File '{old_name}' is protected and cannot be renamed.")
+                        return
                     new_name_bytes = new_name.encode('utf-8').ljust(self.max_filename_length, b'\x00')
-                    fs_file.seek(-len(entry), os.SEEK_CUR)
+                    fs_file.seek(entry_pos)
                     fs_file.write(new_name_bytes + entry[self.max_filename_length:])
+                    print(f"File '{old_name}' has been renamed to '{new_name}'.")
                     return
         raise FileNotFoundError(f"File '{old_name}' not found in the file system")
 
     def remove_file(self, filename):
         with open(self.filename, 'r+b') as fs_file:
+            # Step 1: Find the root directory entry
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
-                entry = fs_file.read(self.max_filename_length + 8)
-                if not entry:
-                    break
+                entry_pos = fs_file.tell()
+                entry = fs_file.read(self.max_filename_length + 9)
+                if not entry or entry[:self.max_filename_length].rstrip(b'\x00') == b'':
+                    continue
                 entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
+                protected_flag = entry[self.max_filename_length]
                 if entry_filename == filename:
-                    fs_file.seek(-len(entry), os.SEEK_CUR)
-                    fs_file.write(b'\x00' * len(entry))
+                    if protected_flag == 1:
+                        print(f"File '{filename}' is protected and cannot be deleted.")
+                        return
+                    starting_block = struct.unpack('I', entry[self.max_filename_length + 1:self.max_filename_length + 5])[0]
+
+                    # Step 2: Free data blocks in FAT chain
+                    current_block = starting_block
+                    while True:
+                        fs_file.seek(self.fat_start + current_block * 4)
+                        fat_entry = struct.unpack('I', fs_file.read(4))[0]
+                        fs_file.seek(-4, os.SEEK_CUR)
+                        fs_file.write(struct.pack('I', 0))  # Mark block as free
+
+                        if fat_entry == 0xFFFFFFFF:
+                            break
+                        current_block = fat_entry
+
+                    # Step 3: Mark directory entry as deleted (set first byte to 0xE5)
+                    fs_file.seek(entry_pos)
+                    fs_file.write(b'\xE5' + b'\x00' * (self.max_filename_length + 8))
+                    print(f"File '{filename}' has been deleted.")
                     return
-        raise FileNotFoundError(f"File '{filename}' not found in the file system")
+            raise FileNotFoundError(f"File '{filename}' not found in the file system")
 
     def list_files(self):
         files = []
         with open(self.filename, 'rb') as fs_file:
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
-                entry = fs_file.read(self.max_filename_length + 8)
-                if not entry:
-                    return files
-                filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
+                entry = fs_file.read(self.max_filename_length + 9)
+                if not entry or len(entry) < self.max_filename_length + 9:
+                    break
+                if entry[0] == 0xE5:  # Skip deleted entries
+                    continue
+                filename_bytes = entry[:self.max_filename_length]
+                filename = filename_bytes.rstrip(b'\x00').decode('utf-8')
                 if filename:
-                    files.append(filename)
+                    protected_flag = entry[self.max_filename_length]
+                    status = "Protected" if protected_flag != 0 else "Unprotected"
+                    files.append((filename, status))
+                else:
+                    # Empty filename, no more entries
+                    break
         return files
 
     def free_space(self):
@@ -239,14 +283,14 @@ class FURGfs:
         with open(self.filename, 'r+b') as fs_file:
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
-                entry = fs_file.read(self.max_filename_length + 8)
+                entry_pos = fs_file.tell()
+                entry = fs_file.read(self.max_filename_length + 9)
                 if not entry:
                     break
                 entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
                 if entry_filename == filename:
-                    fs_file.seek(-len(entry), os.SEEK_CUR)
-                    protected_flag = b'\x01'
-                    fs_file.write(entry[:self.max_filename_length] + protected_flag + entry[self.max_filename_length + 1:])
+                    fs_file.seek(entry_pos + self.max_filename_length)
+                    fs_file.write(b'\x01')  # Set protected flag
                     return
         raise FileNotFoundError(f"File '{filename}' not found in the file system")
 
@@ -254,14 +298,14 @@ class FURGfs:
         with open(self.filename, 'r+b') as fs_file:
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
-                entry = fs_file.read(self.max_filename_length + 8)
+                entry_pos = fs_file.tell()
+                entry = fs_file.read(self.max_filename_length + 9)
                 if not entry:
                     break
                 entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
                 if entry_filename == filename:
-                    fs_file.seek(-len(entry), os.SEEK_CUR)
-                    unprotected_flag = b'\x00'
-                    fs_file.write(entry[:self.max_filename_length] + unprotected_flag + entry[self.max_filename_length + 1:])
+                    fs_file.seek(entry_pos + self.max_filename_length)
+                    fs_file.write(b'\x00')  # Set unprotected flag
                     return
         raise FileNotFoundError(f"File '{filename}' not found in the file system")
 
@@ -290,7 +334,6 @@ class FURGfs:
             print("6. Check free space")
             print("7. Protect file")
             print("8. Unprotect file")
-            print("9. Create text file")
             print("10. Copy file to FS")
             print("24. Exit")
             choice = input("Enter your choice: ")
@@ -314,14 +357,12 @@ class FURGfs:
                 new_name = input("Enter the new file name: ")
                 try:
                     fs.rename_file(old_name, new_name)
-                    print(f"File '{old_name}' renamed to '{new_name}'.")
                 except FileNotFoundError as e:
                     print(e)
             elif choice == '4':
                 filename = input("Enter the file name to remove: ")
                 try:
                     fs.remove_file(filename)
-                    print(f"File '{filename}' removed from FS.")
                 except FileNotFoundError as e:
                     print(e)
             elif choice == '5':
