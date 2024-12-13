@@ -5,12 +5,13 @@ class FURGfs:
     def __init__(self, size_mb, filename='furgfs2.fs'):
         self.size_mb = size_mb
         self.block_size = 4096
-        self.max_filename_length = 255 # Max length of filename with extension
+        self.max_filename_length = 255
         self.header_size = 1024
         self.fat_start = self.header_size
         self.root_dir_start = self.fat_start + (self.size_mb * 1024 * 1024 // self.block_size) * 4
         self.data_start = self.root_dir_start + (self.max_filename_length + 8) * 1024
         self.filename = filename
+        self.current_dir = '/'
         if not os.path.exists(self.filename):
             self.create_fs()
 
@@ -48,7 +49,14 @@ class FURGfs:
                     fs_file.write(content.encode('utf-8')[:self.block_size])
                     content = content[self.block_size:]
                     if not content:
-                        break
+                        fs_file.seek(self.root_dir_start)
+                    for _ in range(1024):
+                        entry = fs_file.read(self.max_filename_length + 8)
+                        if entry[:self.max_filename_length].rstrip(b'\x00') == filename_bytes.rstrip(b'\x00'):
+                            fs_file.seek(-len(entry), os.SEEK_CUR)
+                            fs_file.write(filename_bytes + struct.pack('I', block_index) + struct.pack('I', len(content)))
+                            break
+                    break
             else:
                 raise Exception("Not enough space in the file system")
 
@@ -96,6 +104,8 @@ class FURGfs:
         with open(src_path, 'rb') as src_file:
             content = src_file.read()
             filename = os.path.basename(src_path)
+            if self.current_dir != '/':
+                filename = self.current_dir + '/' + filename
             self.create_binary_file(filename, content)
 
     def create_binary_file(self, filename, content):
@@ -160,7 +170,7 @@ class FURGfs:
                 if entry[0] == 0xE5:  # Skip deleted entries
                     continue
                 entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
-                if entry_filename == filename:
+                if entry_filename == filename or entry_filename == os.path.join(self.current_dir, filename).lstrip('/'):
                     # Skip the protected_flag byte
                     starting_block = struct.unpack('I', entry[self.max_filename_length + 1:self.max_filename_length + 5])[0]
                     file_size = struct.unpack('I', entry[self.max_filename_length + 5:self.max_filename_length + 9])[0]
@@ -183,7 +193,7 @@ class FURGfs:
                         current_block = fat_entry
 
                     # Step 3: Write data to destination file
-                    with open(os.path.join(dest_path, filename), 'wb') as dest_file:
+                    with open(os.path.join(dest_path, os.path.basename(filename)), 'wb') as dest_file:
                         dest_file.write(data)
                     print(f"File '{filename}' copied to '{dest_path}'.")
                     return
@@ -254,17 +264,15 @@ class FURGfs:
                 entry = fs_file.read(self.max_filename_length + 9)
                 if not entry or len(entry) < self.max_filename_length + 9:
                     break
-                if entry[0] == 0xE5:  # Skip deleted entries
+                if entry[0] == 0xE5:
                     continue
                 filename_bytes = entry[:self.max_filename_length]
                 filename = filename_bytes.rstrip(b'\x00').decode('utf-8')
                 if filename:
                     protected_flag = entry[self.max_filename_length]
                     status = "Protected" if protected_flag != 0 else "Unprotected"
-                    files.append((filename, status))
-                else:
-                    # Empty filename, no more entries
-                    break
+                    files.append((filename, status, os.path.split(filename)[0]))
+        print(f"Current directory: {self.current_dir}")
         return files
 
     def free_space(self):
@@ -308,7 +316,60 @@ class FURGfs:
                     fs_file.write(b'\x00')  # Set unprotected flag
                     return
         raise FileNotFoundError(f"File '{filename}' not found in the file system")
+    
+    def create_directory(self, dirname):
+        if not dirname.startswith('/'):
+            dirname = '/' + dirname
+        with open(self.filename, 'r+b') as fs_file:
+            # Find empty root directory entry
+            fs_file.seek(self.root_dir_start)
+            for _ in range(1024):
+                entry = fs_file.read(self.max_filename_length + 9)
+                if entry[:self.max_filename_length].rstrip(b'\x00') == b'':
+                    fs_file.seek(-len(entry), os.SEEK_CUR)
+                    dirname_bytes = dirname.encode('utf-8').ljust(self.max_filename_length, b'\x00')
+                    directory_flag = b'\x02'  # Directory flag
+                    fs_file.write(dirname_bytes + directory_flag + b'\x00' * 8)
+                    print(f"Directory '{dirname}' created.")
+                    return
+            raise Exception("Root directory is full")
 
+    def list_directories(self):
+        directories = []
+        with open(self.filename, 'rb') as fs_file:
+            fs_file.seek(self.root_dir_start)
+            for _ in range(1024):
+                entry = fs_file.read(self.max_filename_length + 9)
+                if not entry or len(entry) < self.max_filename_length + 9:
+                    break
+                if entry[0] == 0xE5:  # Skip deleted entries
+                    continue
+                filename_bytes = entry[:self.max_filename_length]
+                filename = filename_bytes.rstrip(b'\x00').decode('utf-8')
+                if filename and entry[self.max_filename_length] == 2:  # Directory flag
+                    directories.append(filename)
+        return directories
+    
+    def change_directory(self, path):
+        if not path.startswith('/'):
+            path = '/' + path
+        if path == '/':
+            self.current_dir = '/'
+            return
+        with open(self.filename, 'rb') as fs_file:
+            fs_file.seek(self.root_dir_start)
+            for _ in range(1024):
+                entry = fs_file.read(self.max_filename_length + 9)
+                if not entry or len(entry) < self.max_filename_length + 9:
+                    break
+                if entry[0] == 0xE5:  # Skip deleted entries
+                    continue
+                entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
+                if entry_filename == path and entry[self.max_filename_length] == 2:  # Directory flag
+                    self.current_dir = path
+                    print(f"Changed directory to '{path}'")
+                    return
+        raise FileNotFoundError(f"Directory '{path}' not found in the file system")
 
     @staticmethod
     def menu():
@@ -326,6 +387,7 @@ class FURGfs:
         fs = FURGfs(size_mb if size_mb is not None else 800, filename)
         while True:
             print(f"\n{fs.filename} File System Menu")
+            print(f"Current directory: {fs.current_dir}")
             print("1. Show file content")
             print("2. Copy file out of FS")
             print("3. Rename file")
@@ -334,7 +396,10 @@ class FURGfs:
             print("6. Check free space")
             print("7. Protect file")
             print("8. Unprotect file")
+            print("9. List directories")
             print("10. Copy file to FS")
+            print("11. Create directory")
+            print("12. Change directory")
             print("24. Exit")
             choice = input("Enter your choice: ")
 
@@ -388,14 +453,28 @@ class FURGfs:
                     print(f"File '{filename}' unprotected in FS.")
                 except FileNotFoundError as e:
                     print(e)
+            elif choice == '9':
+                directories = fs.list_directories()
+                try:
+                    print("Directories in FS:")
+                    for directory in directories:
+                        print(directory)
+                except FileNotFoundError as e:
+                    print(e)
             elif choice == '10':
                 src_path = input("Enter the source file path: ")
                 fs.copy_to_fs(src_path)
                 print(f"File '{src_path}' copied to FS.")
             elif choice == '11':
-                src_path = input("Enter the source file path: ")
-                fs.copy_to_fs(src_path)
-                print(f"File '{src_path}' copied to FS.")
+                dirname = input("Enter the directory name: ")
+                fs.create_directory(dirname)
+                print(f"Directory '{dirname}' created.")
+            elif choice == '12':
+                path = input("Enter the directory path: ")
+                try:
+                    fs.change_directory(path)
+                except FileNotFoundError as e:
+                    print(e)
             elif choice == '24':
                 print("Exiting...")
                 break
