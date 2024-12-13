@@ -54,19 +54,39 @@ class FURGfs:
 
     def show_file_content(self, filename):
         with open(self.filename, 'rb') as fs_file:
+            # Step 1: Find the root directory entry
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
                 entry = fs_file.read(self.max_filename_length + 8)
                 entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
                 if entry_filename == filename:
-                    if entry[self.max_filename_length] == 1:
-                        print(f"File '{filename}' is protected and cannot be read.")
-                        return
-                    fs_file.seek(self.data_start)
-                    data = fs_file.read()
-                    print(data.decode('utf-8'))
+                    starting_block = struct.unpack('I', entry[self.max_filename_length:self.max_filename_length + 4])[0]
+                    file_size = struct.unpack('I', entry[self.max_filename_length + 4:self.max_filename_length + 8])[0]
+
+                    # Step 2: Read data blocks following FAT chain
+                    data = b''
+                    current_block = starting_block
+                    bytes_remaining = file_size
+                    while True:
+                        fs_file.seek(self.data_start + current_block * self.block_size)
+                        data_block = fs_file.read(min(self.block_size, bytes_remaining))
+                        data += data_block
+                        bytes_remaining -= len(data_block)
+                        if bytes_remaining <= 0:
+                            break
+                        fs_file.seek(self.fat_start + current_block * 4)
+                        fat_entry = struct.unpack('I', fs_file.read(4))[0]
+                        if fat_entry == 0xFFFFFFFF:
+                            break
+                        current_block = fat_entry
+
+                    # Step 3: Try to decode data as UTF-8 text
+                    try:
+                        print(data.decode('utf-8'))
+                    except UnicodeDecodeError:
+                        print(f"File '{filename}' is a binary file and cannot be displayed as text.")
                     return
-        raise FileNotFoundError(f"File '{filename}' not found in the file system")
+            raise FileNotFoundError(f"File '{filename}' not found in the file system")
 
     def copy_to_fs(self, src_path):
         with open(src_path, 'rb') as src_file:
@@ -262,11 +282,11 @@ class FURGfs:
         fs = FURGfs(size_mb if size_mb is not None else 800, filename)
         while True:
             print(f"\n{fs.filename} File System Menu")
-            print("1. Show file content (need to be fixed)")
+            print("1. Show file content")
             print("2. Copy file out of FS")
             print("3. Rename file")
             print("4. Remove file")
-            print("5. List files (need to be fixed)")
+            print("5. List files")
             print("6. Check free space")
             print("7. Protect file")
             print("8. Unprotect file")
