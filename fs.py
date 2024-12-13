@@ -76,47 +76,89 @@ class FURGfs:
 
     def create_binary_file(self, filename, content):
         with open(self.filename, 'r+b') as fs_file:
+            # Step 1: Find empty root directory entry
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
                 entry = fs_file.read(self.max_filename_length + 8)
                 if entry[:self.max_filename_length].rstrip(b'\x00') == b'':
+                    # Empty entry found
                     fs_file.seek(-len(entry), os.SEEK_CUR)
                     filename_bytes = filename.encode('utf-8').ljust(self.max_filename_length, b'\x00')
+                    # Placeholder for starting block index and file size
                     fs_file.write(filename_bytes + b'\x00' * 8)
+                    root_dir_entry_pos = fs_file.tell() - (self.max_filename_length + 8)
                     break
             else:
                 raise Exception("Root directory is full")
 
+            # Step 2: Allocate blocks and build FAT chain
+            total_blocks = (len(content) + self.block_size - 1) // self.block_size
+            free_blocks = []
             fs_file.seek(self.fat_start)
             for block_index in range(self.size_mb * 1024 * 1024 // self.block_size):
+                fs_file.seek(self.fat_start + block_index * 4)
                 fat_entry = fs_file.read(4)
-                if fat_entry == b'\x00\x00\x00\x00':
-                    fs_file.seek(-4, os.SEEK_CUR)
-                    fs_file.write(struct.pack('I', block_index + 1))
-                    fs_file.seek(self.data_start + block_index * self.block_size)
-                    fs_file.write(content[:self.block_size])
-                    content = content[self.block_size:]
-                    if not content:
+                if struct.unpack('I', fat_entry)[0] == 0:
+                    free_blocks.append(block_index)
+                    if len(free_blocks) == total_blocks:
                         break
             else:
                 raise Exception("Not enough space in the file system")
 
+            # Step 3: Write data blocks and update FAT
+            for i, block_index in enumerate(free_blocks):
+                # Write data block
+                fs_file.seek(self.data_start + block_index * self.block_size)
+                fs_file.write(content[i * self.block_size:(i + 1) * self.block_size])
+
+                # Update FAT entry
+                fs_file.seek(self.fat_start + block_index * 4)
+                if i < len(free_blocks) - 1:
+                    # Point to next block
+                    fs_file.write(struct.pack('I', free_blocks[i + 1]))
+                else:
+                    # Last block, mark end of file (EOF)
+                    fs_file.write(struct.pack('I', 0xFFFFFFFF))
+
+            # Step 4: Update root directory entry with starting block and file size
+            fs_file.seek(root_dir_entry_pos)
+            filename_bytes = filename.encode('utf-8').ljust(self.max_filename_length, b'\x00')
+            starting_block = struct.pack('I', free_blocks[0])
+            file_size = struct.pack('I', len(content))
+            fs_file.write(filename_bytes + starting_block + file_size)
+
     def copy_from_fs(self, filename, dest_path):
         with open(self.filename, 'rb') as fs_file:
+            # Step 1: Find the root directory entry
             fs_file.seek(self.root_dir_start)
             for _ in range(1024):
                 entry = fs_file.read(self.max_filename_length + 8)
                 entry_filename = entry[:self.max_filename_length].rstrip(b'\x00').decode('utf-8')
                 if entry_filename == filename:
-                    fs_file.seek(self.fat_start)
-                    for block_index in range(self.size_mb * 1024 * 1024 // self.block_size):
-                        fat_entry = fs_file.read(4)
-                        if struct.unpack('I', fat_entry)[0] == block_index + 1:
-                            fs_file.seek(self.data_start + block_index * self.block_size)
-                            data = fs_file.read(self.block_size)
-                            with open(os.path.join(dest_path, filename), 'wb') as dest_file:
-                                dest_file.write(data)
-                            return
+                    starting_block = struct.unpack('I', entry[self.max_filename_length:self.max_filename_length + 4])[0]
+                    file_size = struct.unpack('I', entry[self.max_filename_length + 4:self.max_filename_length + 8])[0]
+
+                    # Step 2: Read data blocks following FAT chain
+                    data = b''
+                    current_block = starting_block
+                    bytes_remaining = file_size
+                    while True:
+                        fs_file.seek(self.data_start + current_block * self.block_size)
+                        data_block = fs_file.read(min(self.block_size, bytes_remaining))
+                        data += data_block
+                        bytes_remaining -= len(data_block)
+                        if bytes_remaining <= 0:
+                            break
+                        fs_file.seek(self.fat_start + current_block * 4)
+                        fat_entry = struct.unpack('I', fs_file.read(4))[0]
+                        if fat_entry == 0xFFFFFFFF:
+                            break
+                        current_block = fat_entry
+
+                    # Step 3: Write data to destination file
+                    with open(os.path.join(dest_path, filename), 'wb') as dest_file:
+                        dest_file.write(data)
+                    return
             raise FileNotFoundError(f"File '{filename}' not found in the file system")
 
     def rename_file(self, old_name, new_name):
