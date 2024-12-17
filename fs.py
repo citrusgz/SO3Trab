@@ -263,14 +263,17 @@ class FURGfs:
                 entry = fs_file.read(self.max_filename_length + 9)
                 if not entry or len(entry) < self.max_filename_length + 9:
                     break
-                if entry[0] == 0xE5:
+                if entry[0] == 0xE5: 
                     continue
                 filename_bytes = entry[:self.max_filename_length]
-                filename = filename_bytes.rstrip(b'\x00').decode('utf-8')
-                if filename:
+                try:
+                    filename = filename_bytes.rstrip(b'\x00').decode('utf-8')
+                except UnicodeDecodeError:
+                    continue
+                if filename and entry[self.max_filename_length] == 0 and '\x00' not in filename:
                     protected_flag = entry[self.max_filename_length]
                     status = "Protected" if protected_flag != 0 else "Unprotected"
-                    files.append((filename, status, os.path.split(filename)[0]))
+                    files.append((filename, status))
         print(f"Current directory: {self.current_dir}")
         return files
 
@@ -347,7 +350,10 @@ class FURGfs:
                 if entry[0] == 0xE5:  
                     continue
                 filename_bytes = entry[:self.max_filename_length]
-                filename = filename_bytes.rstrip(b'\x00').decode('utf-8')
+                try:
+                    filename = filename_bytes.rstrip(b'\x00').decode('utf-8')
+                except UnicodeDecodeError:
+                    continue
                 if filename and entry[self.max_filename_length] == 2:  
                     directories.append(filename)
         return directories
